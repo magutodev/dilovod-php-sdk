@@ -1,0 +1,32 @@
+# Dependencies
+/vendor/
+
+# IDE
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+/coverage/
+.phpunit.cache/
+.phpunit.result.cache
+phpunit.xml
+
+# Tools cache
+.phpstan.cache/
+.php-cs-fixer.cache
+
+# Environment
+.env
+
+# Composer
+composer.lock
+
+# Docs (generated)
+docs/
