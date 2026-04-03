@@ -1,0 +1,363 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Maguto\Dilovod\Request;
+
+use DateTimeInterface;
+use Maguto\Dilovod\DilovodClient;
+use Maguto\Dilovod\Enum\Action;
+use Maguto\Dilovod\Enum\Operator;
+use Maguto\Dilovod\Enum\QueryType;
+use Maguto\Dilovod\Response\ResultSet;
+
+final class QueryBuilder
+{
+    /** @var DilovodClient */
+    private $client;
+
+    /** @var array<string, mixed>|string|null */
+    private $from;
+
+    /** @var array<string, string> */
+    private $fields = [];
+
+    /** @var list<array{alias: string, operator: string, value: mixed}> */
+    private $filters = [];
+
+    /** @var list<string> */
+    private $dimensions = [];
+
+    /** @var int|null */
+    private $limitCount;
+
+    /** @var int|null */
+    private $limitOffset;
+
+    /** @var bool */
+    private $assembleLinks = true;
+
+    /** @var bool */
+    private $multilang = false;
+
+    public function __construct(DilovodClient $client, ?string $from = null)
+    {
+        $this->client = $client;
+        $this->from = $from;
+    }
+
+    // ── Тип виборки ─────────────────────────────────────
+
+    /**
+     * Прямий запит до довідника/документа/табличної частини.
+     */
+    public function from(string $objectName): self
+    {
+        $this->from = $objectName;
+
+        return $this;
+    }
+
+    /**
+     * Залишки на дату.
+     *
+     * @param DateTimeInterface|string $date
+     * @param string[] $dimensions
+     */
+    public function balance(
+        string $register,
+        $date,
+        array $dimensions = []
+    ): self {
+        $source = [
+            'type' => QueryType::BALANCE,
+            'register' => $register,
+            'date' => $this->formatDate($date),
+        ];
+
+        if ($dimensions !== []) {
+            $source['dimensions'] = $dimensions;
+        }
+
+        $this->from = $source;
+
+        return $this;
+    }
+
+    /**
+     * Обороти за період.
+     *
+     * @param DateTimeInterface|string $startDate
+     * @param DateTimeInterface|string $endDate
+     * @param string[] $dimensions
+     */
+    public function turnover(
+        string $register,
+        $startDate,
+        $endDate,
+        array $dimensions = []
+    ): self {
+        $source = [
+            'type' => QueryType::TURNOVER,
+            'register' => $register,
+            'startDate' => $this->formatDate($startDate),
+            'endDate' => $this->formatDate($endDate),
+        ];
+
+        if ($dimensions !== []) {
+            $source['dimensions'] = $dimensions;
+        }
+
+        $this->from = $source;
+
+        return $this;
+    }
+
+    /**
+     * Залишки + обороти за період.
+     *
+     * @param DateTimeInterface|string $startDate
+     * @param DateTimeInterface|string $endDate
+     * @param string[] $dimensions
+     */
+    public function balanceAndTurnover(
+        string $register,
+        $startDate,
+        $endDate,
+        array $dimensions = []
+    ): self {
+        $source = [
+            'type' => QueryType::BALANCE_AND_TURNOVER,
+            'register' => $register,
+            'startDate' => $this->formatDate($startDate),
+            'endDate' => $this->formatDate($endDate),
+        ];
+
+        if ($dimensions !== []) {
+            $source['dimensions'] = $dimensions;
+        }
+
+        $this->from = $source;
+
+        return $this;
+    }
+
+    /**
+     * Зріз актуальних значень інформаційного регістру.
+     *
+     * @param DateTimeInterface|string $date
+     */
+    public function sliceLast(string $register, $date): self
+    {
+        $this->from = [
+            'type' => QueryType::SLICE_LAST,
+            'register' => $register,
+            'date' => $this->formatDate($date),
+        ];
+
+        return $this;
+    }
+
+    // ── Конфігурація запиту ──────────────────────────────
+
+    /**
+     * Поля для вибірки.
+     *
+     * @param array<string, string> $fields ['dataPath' => 'alias', ...]
+     */
+    public function fields(array $fields): self
+    {
+        $this->fields = $fields;
+
+        return $this;
+    }
+
+    /**
+     * Додати одне поле.
+     */
+    public function field(string $dataPath, string $alias): self
+    {
+        $this->fields[$dataPath] = $alias;
+
+        return $this;
+    }
+
+    /**
+     * Додати умову фільтрації.
+     *
+     * @param mixed $value
+     */
+    public function where(string $alias, Operator $operator, $value): self
+    {
+        $this->filters[] = [
+            'alias' => $alias,
+            'operator' => $operator->value,
+            'value' => $value,
+        ];
+
+        return $this;
+    }
+
+    /**
+     * Виміри для згортання (аналог GROUP BY).
+     *
+     * @param string[] $dimensions
+     */
+    public function dimensions(array $dimensions): self
+    {
+        $this->dimensions = array_values($dimensions);
+
+        return $this;
+    }
+
+    /**
+     * Ліміт записів.
+     */
+    public function limit(int $count, ?int $offset = null): self
+    {
+        $this->limitCount = $count;
+        $this->limitOffset = $offset;
+
+        return $this;
+    }
+
+    /**
+     * Вимкнути збірку посилань (тільки ID, без представлень — швидше).
+     */
+    public function withoutLinks(): self
+    {
+        $this->assembleLinks = false;
+
+        return $this;
+    }
+
+    /**
+     * Увімкнути мультимовні текстові поля.
+     */
+    public function multilang(): self
+    {
+        $this->multilang = true;
+
+        return $this;
+    }
+
+    // ── Виконання ────────────────────────────────────────
+
+    /**
+     * Виконати запит і повернути ResultSet.
+     */
+    public function get(): ResultSet
+    {
+        $response = $this->client->execute(Action::request(), $this->toParams());
+        $data = $response->toArray();
+
+        if (!$this->assembleLinks && isset($data['columns'], $data['data'])) {
+            /** @var list<string> $columns */
+            $columns = $data['columns'];
+
+            /** @var list<list<mixed>> $rawRows */
+            $rawRows = $data['data'];
+
+            $rows = [];
+            foreach ($rawRows as $rawRow) {
+                /** @var array<string, mixed> $row */
+                $row = array_combine($columns, $rawRow);
+                $rows[] = $row;
+            }
+
+            return new ResultSet($rows, $columns);
+        }
+
+        /** @var list<array<string, mixed>> $rows */
+        $rows = array_values($data);
+
+        return new ResultSet($rows);
+    }
+
+    /**
+     * Виконати запит і повернути перший запис або null.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function first(): ?array
+    {
+        $originalCount = $this->limitCount;
+        $originalOffset = $this->limitOffset;
+        $this->limitCount = 1;
+        $this->limitOffset = null;
+
+        try {
+            return $this->get()->first();
+        } finally {
+            $this->limitCount = $originalCount;
+            $this->limitOffset = $originalOffset;
+        }
+    }
+
+    /**
+     * Виконати і повернути кількість записів.
+     */
+    public function count(): int
+    {
+        return $this->get()->count();
+    }
+
+    /**
+     * Зібрати params без виконання (для інспекції / тестування).
+     *
+     * @return array<string, mixed>
+     */
+    public function toParams(): array
+    {
+        $params = [];
+
+        if ($this->from !== null) {
+            $params['from'] = $this->from;
+        }
+
+        if ($this->fields !== []) {
+            $params['fields'] = $this->fields;
+        }
+
+        if ($this->filters !== []) {
+            $params['filters'] = $this->filters;
+        }
+
+        if ($this->dimensions !== []) {
+            $params['dimensions'] = $this->dimensions;
+        }
+
+        if ($this->limitCount !== null) {
+            if ($this->limitOffset !== null) {
+                $params['limit'] = [
+                    'offset' => $this->limitOffset,
+                    'count' => $this->limitCount,
+                ];
+            } else {
+                $params['limit'] = $this->limitCount;
+            }
+        }
+
+        if (!$this->assembleLinks) {
+            $params['assembleLinks'] = false;
+        }
+
+        if ($this->multilang) {
+            $params['multilang'] = true;
+        }
+
+        return $params;
+    }
+
+    /**
+     * @param DateTimeInterface|string $date
+     */
+    private function formatDate($date): string
+    {
+        if ($date instanceof DateTimeInterface) {
+            return $date->format('Y-m-d H:i:s');
+        }
+
+        return $date;
+    }
+}

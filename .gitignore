@@ -1,0 +1,32 @@
+# Dependencies
+/vendor/
+.github/git-commit-instructions.md
+
+# IDE
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+/coverage/
+.phpunit.cache/
+phpunit.xml
+
+# Tools cache
+.phpstan.cache/
+.php-cs-fixer.cache
+
+# Environment
+.env
+
+# Composer
+composer.lock
+
+docs/
+.phpunit.result.cache
